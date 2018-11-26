@@ -1,0 +1,19 @@
+#!/bin/bash
+# Print colorized hexcodes defined in st's config.h
+config=~/src/ports/st/config.h
+colors=( $(cat $config |\
+	sed -n '/static const char \*colorname\[\] = {/,/\[255\] = 0,/p' |\
+	sed '{1d; 2d; 12d; $d; /^$/d}' |\
+	tr -d [:punct:] |\
+	tr -d [:blank:]) )
+
+echo -e " Black    Red      Green    Yellow   Blue     Magenta   Cyan    White   
+ ──────────────────────────────────────────────────────────────────────"
+for i in {0..7}; do
+	echo -en "\e[$((30+$i))m #${colors[$i]} \e[0m"
+done
+echo
+for i in {0..7}; do
+	echo -en "\e[1;$((30+$i))m #${colors[$i+8]} \e[0m"
+done
+echo

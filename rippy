@@ -1,0 +1,307 @@
+#!/usr/bin/env python
+# pyrip is a python script to rip and encode files from audio-cds, it also supports automatic tagging, using cddb.
+# It requires cdparanoia and one of the following encoders, to be installed: lame (mp3), flac (flac), oggenc (ogg).
+
+#    Copyright (C) 2012  Maximilian Dietrch <maximilian_dietrich@t-online.de>
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+import CDDB
+import DiscID
+import ID3
+
+import os
+import argparse
+# import ConfigParser
+
+import locale
+
+# Arguments
+argparser=argparse.ArgumentParser(description='Rip and encode files from an audio-cd', epilog='Requires cdparanoia and an encoder to be installed.')
+argparser.add_argument('-d', '--device', metavar='PATH', help='PATH to the cdrom device to use; default: /dev/cdrom', default='/dev/cdrom')
+argparser.add_argument('-e', '--encoder', choices=['lame', 'flac', 'oggenc'], metavar='ENCODER', help='The encoder to use: lame (mp3), flac (flac), oggenc (ogg); default: lame', default='lame')
+argparser.add_argument('-o', '--output', metavar='PATH', help="PATH to output the files to, missing directories will be created. \n Available variables: _a_ - Artist; \n _b_ - Album;\n _y_- Year;\n default:  %s/_a_-_b_/" % os.environ['HOME'], default=os.environ['HOME'] + '/_a_-_b_')
+argparser.add_argument('-O', '--options', metavar='OPTIONS', help='Encoder specific options, see the respective man pages. Caution: Must be properly quoted as one string!', default='')
+argparser.add_argument('-q', '--quality', choices=['low', 'mid', 'high', 'best'], metavar='QUALITY', help='allowed values: low, mid, high, best; default: high', default='high')
+argparser.add_argument('-T', '--track', metavar='NUMBER(S)', help="Track/s to rip from the cd. \nUse cdparanoia compatible specification; default: all", default='')
+argparser.add_argument('-t', '--title', metavar='NAME', help="Name/Naming-scheme for the track/s. \n Available variables: _a_ - Artist; \n _b_ - Album; \n _t_ - Track Title; \n _n_ - Track Number; \n _y_- Year; default: _n_-_t_", default='_n_-_t_')
+argparser.add_argument('-v', '--version', help='show version and exit', action='store_true')
+
+# Functions
+# set up some stuff | TODO: Checks for encoder and cdparanoia
+def setup():
+	locale.setlocale(locale.LC_ALL, '') # use systems default locale
+
+	global args			    # get args
+	args = argparser.parse_args()
+
+	version()
+
+	try:
+		if os.environ['http_proxy'] and not os.environ['http_proxy'].startswith('http://'): # make sure the proxy format is correct
+			os.environ['http_proxy'] = 'http://' + os.environ['http_proxy']
+	except KeyError:
+		print('')
+
+
+
+#check for -v flag -> print version and exit; called by setup
+def version():
+	if args.version:
+		print('0.3b 08/06/12')
+		exit(0)
+
+
+
+# try to get the specific disc-id with CDDB.query
+def getCddb():
+	global status1
+	global info1
+	disc_id = DiscID.disc_id(DiscID.open(args.device))
+	(status1, info1)=CDDB.query(disc_id)
+
+	# create error dictionary for CDDB.query; this avoids endless if statements
+	errorsQ={ 202 : "No match found!", 403 : "Database entry is corrupt", 409 : "No handshake! (client-side error?)"}
+	
+	# Check for errors
+	if status1 != 200 and status1 != 211 and status1 != 210 and status1 not in errorsQ:
+		print "Error:"
+		print("Server or client Error!")
+		exit(1)
+	elif status1 in errorsQ:
+		print "Error:"
+		print(errorsQ[status1])
+		exit(1)
+
+	# Check for multiple matches, then print them 
+	elif type(info1) == dict:    # If there's only one match convert info1 to a list anyway
+		info1=[info1]	     # so we can use the same way to print the output	
+	print("Choose:")
+	counter = 0
+	for i in range(0,len(info1)):
+		print("[%i] \n \
+    Title:	    %s \n \
+    Category:	    %s \n \
+    CDDB Checksum: %s" \
+			% (counter, info1[i]['title'], info1[i]['category'], info1[i]['disc_id']))
+		counter += 1
+	print("[%i] \n \
+    Manual Input" \
+		% (counter))
+	print("[%i] \n \
+    No Tags" \
+    		% (counter+1))
+	
+	# let the user choose
+	result = choice(0, 'Valid number or leave empty default', 'int', counter+1)
+	global tagging
+	if result == counter:
+		info1 = {'disc_id' : 'None'}
+		tagging = 1
+		manualInput(disc_id)
+	elif result == counter+1:
+		info1 = {'category' : 'None', 'disc_id' : 'None', 'title' : 'Some Artist / Some Album'}
+		global info2
+		info2 = {'DYEAR' : 'None', 'DTITLE' : 'Some Artist / Some Album'}
+		for i in range(0,disc_id[1]):
+			info2['TTITLE' + str(i)] = 'Track' + str(i+1)
+		tagging = 0
+	else:
+		info1 = info1[result]
+		category = info1['category'] 
+		disc_id  = info1['disc_id']
+		tagging = 1
+		getCddbStuff(category, disc_id)
+
+
+
+# Try to get track titles etc. with CDDB.read; called by getCddb
+def getCddbStuff(category, disc_id):
+	global status2
+	global info2
+	(status2, info2)=CDDB.read(category, disc_id)
+
+	# create error dictionary for CDDB.read
+	errorsR={401 : "Specified entry not found!", 402 : "Server Error!", 403 : "Database entry is corrupt!", 409 : "No handshake!", 417 : "Access limit exceeded!"}
+
+	# Check for errors
+	if status2 != 210 and status2 not in errorsR: 
+		print "Error:"
+		print("Server or client error!")
+		exit(1)
+	elif status2 in errorsR:
+		print "Error:"
+		print(errorsR[status2])
+		exit(1)
+
+
+
+# Manually input tags; called by getCddb
+def manualInput(disc_id):
+	global info2
+	info2 = {}
+	result = ''
+	Title  = 'Some Title'
+	Artist = 'Some Artist'
+	Year   = None
+	while result  == 'no' or result == '':
+		result  = ''
+		Title   = choice(Title, 'Album Title', 'str')
+		Artist  = choice(Artist, 'Album Artist', 'str')
+
+		info2['DTITLE'] = Artist + ' / ' + Title
+		Year  = choice(Year, 'Year', 'str')
+		info2['DYEAR'] = Year
+		
+		for i in range(0,int(disc_id[1])):
+			info2['TTITLE' + str(i)] = choice('Track %i' % (i+1), 'Track %i Title' % (i+1), 'str')
+
+	# print and let user revise
+		print('')
+		print("	Title: %s \n \
+	Year: %s" % (info2['DTITLE'], info2['DYEAR']))
+		for i in range(0,int(disc_id[1])):
+			print("		Track %i: %s" % (i+1, info2['TTITLE' + str(i)]))
+		while result != 'yes' and result != 'no':
+			result = choice('yes/no', 'Use this tags?', 'str')
+		
+
+
+
+# Rip the tracks from the disk
+def rip():
+	global rippath
+	rippath=str(os.environ['HOME'])+'/.'+info1['disc_id']+'-rip'
+	while os.access(rippath, os.R_OK):
+		rippath += '1'
+	os.mkdir(rippath)
+	os.chdir(rippath)
+	os.system("cdparanoia -B %s" %(args.track) )
+
+
+
+# Encode tracks using specified encoder and quality (default: lame - high)
+def encode():
+	qualities = [{'low' : '-q 7', 'mid' : '-q 5', 'high' : '-q 2', 'best' : '-q 0'}, # lame quality synonyms \
+		    {'low' : '-2', 'mid' : '-4', 'high' : '-6', 'best' : '-8'}, # same for flac \
+		    {'low' : '-q 1', 'mid' : '-q 5', 'high' : '-q 8', 'best' : '-q 10'}] # and ogg
+		    
+	if args.encoder == 'lame':
+		encq = qualities[0][str(args.quality)]
+	elif args.encoder == 'flac':
+		encq = qualities[1][str(args.quality)]
+	elif args.encoder == 'oggenc':
+		encq = qualities[2][str(args.quality)]
+
+	# encoder command to use
+	enccmd = str(args.encoder) + ' ' + str(encq) + ' ' + str(args.options)
+	
+	# create output directory
+	outv={'_a_' : info2['DTITLE'].split('/')[0].strip(), '_b_' : info2['DTITLE'].split('/')[1].strip(), '_y_'  : info2['DYEAR']}
+	global encdir
+	encdir = str(args.output)
+	for v in ['_a_', '_b_', '_y_']:
+		encdir = encdir.replace(v, outv[v])
+
+	while os.access(encdir, os.R_OK):
+		encdir += '1' 
+	os.mkdir(encdir)
+
+	# naming scheme processing
+	tn = 0
+	titlev = {'_a_' : info2['DTITLE'].split('/')[0].strip(), '_b_' : info2['DTITLE'].split('/')[1].strip(), '_y_'  : info2['DYEAR'], '_t_' : info2['TTITLE' + str(tn)], '_n_' : str(tn)}
+	extension = {'lame' : '.mp3', 'oggenc' : '.ogg', 'flac' : '.flac'}
+
+	# for loop to encode
+	for f in os.listdir(str(rippath)):
+		tn = int(f.split('.')[0].lstrip('track').lstrip('0')) # get tracknumber and format it
+		name = args.title
+		for v in { '_a_', '_b_', '_y_', '_t_', '_n_'}:
+			titlev['_n_'] = str(tn)
+			titlev['_t_'] = info2['TTITLE' + str(tn-1)]
+			os.chdir(str(rippath))
+			name = name.replace(v, titlev[v])
+		name += extension[args.encoder]
+		os.chdir(str(rippath))
+		if args.encoder == 'lame':
+			os.system('%s \"%s\" \"%s\"' % (enccmd, f, str(encdir + '/' + name)))
+		else:
+			os.system('%s \"%s\" -o \"%s\"' % (enccmd, f, str(encdir + '/' + name)))
+
+		if tagging == 1: tag(titlev['_t_'], titlev['_n_'], encdir, name) # tag file
+
+
+
+# write the id3-tags, called by encode
+def tag(title, number, encdir, name):
+	os.chdir(encdir)
+	afile = name
+	if args.encoder == 'oggenc':    # ogg uses list instead of strings
+		id3info = ID3.ID3(afile, as_tuple=1)
+	else:
+		id3info = ID3.ID3(afile)
+	id3info['TITLE']       = title
+	id3info['TRACKNUMBER'] = number
+	id3info['ARTIST']      = info2['DTITLE'].split('/')[0].strip()
+	id3info['ALBUM']       = info2['DTITLE'].split('/')[1].strip()
+	id3info['YEAR']        = info2['DYEAR']
+
+
+
+# Interaction: ask the user something, then read result; called by getCddb
+def choice(defaultv, prompt, dtype, maxv=0):
+	result = ''
+	if dtype == 'int':
+		while result == '' or not result >= 0 or not result <= maxv:
+			result = raw_input(str(prompt) + ' ['+str(defaultv)+']: ')
+			if result == '': result = defaultv
+	
+			try:
+				result = int(result)
+			except ValueError:
+				continue
+	else:
+		while result == '':
+			result = raw_input(str(prompt) + ' ['+str(defaultv)+']: ')
+			if result == '': result = defaultv
+			try:
+				result = str(result)
+			except ValueError:
+				continue
+	return result
+
+
+
+# delete obsolete files
+def cleanup():
+	print("Cleaning Up!")
+	os.chdir(rippath)
+	for f in os.listdir(rippath):
+		os.remove(f)
+	os.rmdir(rippath)
+	print("Quitting...")
+
+
+
+def main():
+	setup()
+	getCddb()
+	rip()
+	encode()
+	cleanup()
+	exit(0)
+
+# Execution
+if __name__ == "__main__":
+	main()

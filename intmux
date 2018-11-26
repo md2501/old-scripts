@@ -1,0 +1,6 @@
+#!/bin/sh
+if [ "$(pidof tmux)" ]; then
+	tmux new-window -d "$@"
+else 
+	st -e /bin/sh -c "$@"
+fi

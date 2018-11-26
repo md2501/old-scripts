@@ -1,0 +1,21 @@
+#!/bin/sh
+
+sourced=$HOME/src/repo/use
+
+cd $sourced
+for d in *; do
+	if [ -d "$sourced/$d/.git" ]; then
+		echo "===> $d"
+		cd "$sourced/$d"; git pull
+	elif [ -d "$sourced/$d/.svn" ]; then
+		echo "===> $d"
+		cd "$sourced/$d"; svn up
+	elif [ -d "$sourced/$d/.hg" ]; then
+		echo "===> $d"
+		cd "$sourced/$d"; hg pull
+	elif [ -d "$sourced/$d/CVS" ]; then
+		echo "===> $d"
+		cd $sourced/$d; cvs update
+	fi
+done
+exit

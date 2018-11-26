@@ -1,0 +1,22 @@
+#!/bin/sh
+
+get_mpc () {
+	mpc -f '%artist% - %title% #|' current
+}
+
+get_load () {
+	awk '{print $1, $2, $3}' < /proc/loadavg
+}
+
+get_vol () {
+	amixer get Master | awk 'END{print $4, $NF}' | sed s'/\[on\]//' | sed s'/\[off\]/m /'
+}
+
+get_time () {
+	date +'%a %b %d %H:%M:%S %Y'
+}
+
+while true; do
+	xsetroot -name "$(get_mpc) $(get_load) | $(get_vol)| $(get_time)" || break
+	sleep 1
+done
